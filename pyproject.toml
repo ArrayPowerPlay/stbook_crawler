@@ -1,0 +1,14 @@
+[project]
+name = "stbook-crawler"
+version = "0.1.0"
+description = "Crawler thu thập thông tin sách tiếng Việt trên stbook.vn theo danh mục."
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "beautifulsoup4>=4.12",
+    "Pillow>=10.0",
+    "tqdm>=4.66",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
