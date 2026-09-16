@@ -9,16 +9,20 @@ Các tuỳ chọn thường dùng:
     --category <slug>        chỉ crawl 1 danh mục (có thể lặp lại nhiều lần)
     --skip-detail             không gọi trang chi tiết (nhanh hơn, ít dữ liệu hơn)
     --download-covers         tải ảnh bìa về data/<slug>/covers/
-    --fetch-content            tải thử vài trang đầu của các sách "Miễn phí"
-    --max-pages N              số trang tối đa tải cho mỗi sách khi --fetch-content (mặc định 10)
-    --delay SECONDS             độ trễ giữa các request (mặc định 0.8s)
-    --out DIR                   thư mục ghi dữ liệu (mặc định ./data)
+    --download-pdf              tải TOÀN BỘ nội dung các sách "Miễn phí" đọc được
+                                 online, ghép thành file PDF tại data/<slug>/content/<id>.pdf
+    --max-pages N                giới hạn số trang tải mỗi sách khi --download-pdf
+                                 (mặc định: không giới hạn, tải hết sách)
+    --keep-page-images           giữ lại ảnh từng trang sau khi đã ghép PDF (mặc định xoá)
+    --delay SECONDS               độ trễ giữa các request (mặc định 0.8s)
+    --out DIR                     thư mục ghi dữ liệu (mặc định ./data)
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import sys
 from pathlib import Path
 
@@ -26,7 +30,7 @@ from tqdm import tqdm
 
 from .categories import CATEGORIES, Category
 from .client import RateLimitedSession
-from .content import DEFAULT_MAX_PAGES, download_preview_pages
+from .content import assemble_pdf, download_book_pages
 from .parse_category import fetch_category_books
 from .parse_detail import fetch_book_detail
 from .storage import book_record, category_dir_for, write_all_books, write_category_books
@@ -55,15 +59,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Tải ảnh bìa sách về data/<slug>/covers/.",
     )
     parser.add_argument(
-        "--fetch-content",
+        "--download-pdf",
         action="store_true",
-        help="Thử tải một số trang xem-trước của các sách ghi 'Miễn phí' và có thể đọc online.",
+        help="Tải toàn bộ nội dung các sách 'Miễn phí' đọc được online, ghép thành PDF.",
     )
     parser.add_argument(
         "--max-pages",
         type=int,
-        default=DEFAULT_MAX_PAGES,
-        help=f"Số trang tối đa tải mỗi sách khi dùng --fetch-content (mặc định {DEFAULT_MAX_PAGES}).",
+        default=None,
+        help="Giới hạn số trang tải mỗi sách khi dùng --download-pdf (mặc định: không giới hạn).",
+    )
+    parser.add_argument(
+        "--keep-page-images",
+        action="store_true",
+        help="Giữ lại ảnh JPEG từng trang sau khi đã ghép thành PDF (mặc định xoá để tiết kiệm ổ đĩa).",
     )
     parser.add_argument("--delay", type=float, default=0.8, help="Độ trễ (giây) giữa các request.")
     parser.add_argument("--out", type=Path, default=Path("data"), help="Thư mục ghi dữ liệu.")
@@ -108,8 +117,10 @@ def crawl(args: argparse.Namespace) -> None:
             if args.download_covers and item.cover_url:
                 _download_cover(session, args.out, category, item)
 
-            if args.fetch_content and item.product_code and _is_free_readable(item, detail):
-                _fetch_content(session, args.out, category, item, args.max_pages)
+            if args.download_pdf and item.product_code and _is_free_readable(item, detail):
+                _download_pdf(
+                    session, args.out, category, item, args.max_pages, args.keep_page_images
+                )
 
         write_category_books(args.out, category, category_books)
         all_books.extend(category_books)
@@ -137,16 +148,30 @@ def _download_cover(session: RateLimitedSession, out_dir: Path, category: Catego
         log.warning("  Lỗi tải ảnh bìa sách %s: %s", item.product_id, exc)
 
 
-def _fetch_content(
-    session: RateLimitedSession, out_dir: Path, category: Category, item, max_pages: int
+def _download_pdf(
+    session: RateLimitedSession,
+    out_dir: Path,
+    category: Category,
+    item,
+    max_pages: int | None,
+    keep_page_images: bool,
 ) -> None:
-    content_dir = category_dir_for(out_dir, category) / "content" / item.product_id
-    if content_dir.exists() and any(content_dir.iterdir()):
+    content_dir = category_dir_for(out_dir, category) / "content"
+    pdf_path = content_dir / f"{item.product_id}.pdf"
+    if pdf_path.exists():
         return  # đã tải trước đó, không tải lại
+
+    pages_dir = content_dir / f"{item.product_id}_pages"
     try:
-        download_preview_pages(session, item.product_code, content_dir, max_pages=max_pages)
+        pages = download_book_pages(
+            session, item.product_code, pages_dir, max_pages=max_pages
+        )
+        assemble_pdf(pages, pdf_path)
     except Exception as exc:  # noqa: BLE001
         log.warning("  Lỗi tải nội dung sách %s: %s", item.product_id, exc)
+    finally:
+        if not keep_page_images and pages_dir.exists():
+            shutil.rmtree(pages_dir)
 
 
 def main(argv: list[str] | None = None) -> int:

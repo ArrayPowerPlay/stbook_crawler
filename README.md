@@ -44,8 +44,11 @@ python -m stbook_crawler.main --skip-detail
 # Tải kèm ảnh bìa
 python -m stbook_crawler.main --download-covers
 
-# Thử tải 10 trang đầu (mặc định) của các sách "Miễn phí" đọc được online
-python -m stbook_crawler.main --fetch-content --max-pages 10
+# Tải TOÀN BỘ nội dung các sách "Miễn phí" đọc được online, ghép thành PDF
+python -m stbook_crawler.main --download-pdf
+
+# Giới hạn số trang mỗi sách (ví dụ chỉ lấy 20 trang đầu làm bản xem trước)
+python -m stbook_crawler.main --download-pdf --max-pages 20
 ```
 
 Chạy `python -m stbook_crawler.main --help` để xem đầy đủ các cờ.
@@ -76,21 +79,30 @@ Thư mục `data/` không được commit vào git (xem `.gitignore`) vì đây 
 liệu crawl ra, có thể khá lớn và cần crawl lại theo thời gian thực để cập
 nhật — không phải mã nguồn.
 
-## Về việc tải nội dung sách ("--fetch-content")
+## Về việc tải nội dung sách ("--download-pdf")
 
 Trang đọc của stbook.vn phục vụ nội dung sách dưới dạng ảnh scan độ phân
-giải rất cao (mỗi trang ghép từ 4 ảnh PNG ~3 MB, tổng ~12 MB/trang). Một
-số đầu sách (ví dụ bộ "Toàn tập") có tới 900+ trang — nếu tải hết, một
-cuốn có thể tốn hàng chục GB. Vì vậy:
+giải rất cao — mỗi trang ghép từ 4 ảnh PNG (~3 MB/ảnh gốc). Crawler tự
+động thu nhỏ ảnh (mặc định cạnh dài tối đa 2000px) và nén JPEG trước khi
+ghép thành PDF, nên một cuốn sách trên thực tế nặng khoảng **200-300
+KB/trang** (đã test thật: sách 35 trang → file PDF 8,5 MB, chữ rõ nét).
 
-- Tính năng này **tắt theo mặc định**, phải bật rõ ràng bằng `--fetch-content`.
+- Tính năng này **tắt theo mặc định**, phải bật rõ ràng bằng `--download-pdf`.
 - Chỉ áp dụng cho sách ghi "Bản điện tử: Miễn phí" *và* có nút "Xem ngay"
-  (đọc được online, không cần app riêng).
-- Mặc định chỉ tải **10 trang đầu** mỗi sách (`--max-pages` để đổi) — coi
-  như một bản xem trước, không phải tải trọn nội dung.
+  (đọc được online, không cần app riêng) — sách có giá thì không thể lấy
+  được nội dung bằng cách này.
+- **Không giới hạn số trang theo mặc định** — tải trọn cuốn sách. Dùng
+  `--max-pages N` nếu chỉ muốn một bản xem trước.
+- **Tốc độ**: mỗi trang cần 4 request tải ảnh; trên thực tế đo được
+  khoảng 6-7 giây/trang (server của NXB khá chậm). Một cuốn "Toàn tập"
+  900 trang có thể mất **7-8 tiếng** để tải xong — hãy ước lượng thời
+  gian trước khi chạy `--download-pdf` cho cả một danh mục lớn.
+- Kết quả lưu tại `data/<slug>/content/<product_id>.pdf`; ảnh từng trang
+  chỉ là file tạm và bị xoá sau khi ghép xong (giữ lại bằng
+  `--keep-page-images` nếu cần).
 - Đây vẫn là nội dung có bản quyền của NXB Chính trị Quốc gia Sự thật dù
-  được ghi "miễn phí" để đọc online; hãy cân nhắc mục đích sử dụng trước
-  khi tải số lượng lớn.
+  được ghi "miễn phí" để đọc online; hãy cân nhắc mục đích sử dụng (cá
+  nhân/nghiên cứu) trước khi tải số lượng lớn hoặc toàn bộ catalog.
 
 ## Cấu trúc mã nguồn
 
