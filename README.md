@@ -49,12 +49,18 @@ python -m stbook_crawler.main --download-pdf
 
 # Giới hạn số trang mỗi sách (ví dụ chỉ lấy 20 trang đầu làm bản xem trước)
 python -m stbook_crawler.main --download-pdf --max-pages 20
+
+# Chỉnh số request tải nội dung sách chạy song song (mặc định 8)
+python -m stbook_crawler.main --download-pdf --workers 8
 ```
 
 Chạy `python -m stbook_crawler.main --help` để xem đầy đủ các cờ.
 
-Crawler tôn trọng máy chủ: mặc định nghỉ 0.8 giây giữa hai request
-(`--delay` để chỉnh), tự động thử lại khi gặp lỗi tạm thời.
+`--download-pdf` cần trang chi tiết để biết số trang mỗi sách (không dùng
+được cùng `--skip-detail`). Việc lấy metadata (danh mục, chi tiết) vẫn
+nghỉ 0.8 giây giữa hai request theo mặc định (`--delay` để chỉnh), tự
+động thử lại khi gặp lỗi tạm thời — riêng việc tải nội dung PDF chạy
+song song, xem phần bên dưới.
 
 ## Kết quả đầu ra
 
@@ -63,7 +69,7 @@ data/
   kinh-dien/
     books.json          # toàn bộ sách của riêng danh mục "Kinh điển"
     covers/              # ảnh bìa, nếu bật --download-covers
-    content/<id>/        # ảnh các trang xem thử, nếu bật --fetch-content
+    content/<id>.pdf      # PDF trọn cuốn, nếu bật --download-pdf
   kinh-te/
     books.json
   ...
@@ -81,22 +87,31 @@ nhật — không phải mã nguồn.
 
 ## Về việc tải nội dung sách ("--download-pdf")
 
-Trang đọc của stbook.vn phục vụ nội dung sách dưới dạng ảnh scan độ phân
-giải rất cao — mỗi trang ghép từ 4 ảnh PNG (~3 MB/ảnh gốc). Crawler tự
-động thu nhỏ ảnh (mặc định cạnh dài tối đa 2000px) và nén JPEG trước khi
-ghép thành PDF, nên một cuốn sách trên thực tế nặng khoảng **200-300
-KB/trang** (đã test thật: sách 35 trang → file PDF 8,5 MB, chữ rõ nét).
+Trang đọc của stbook.vn phục vụ nội dung sách dưới dạng ảnh — mỗi trang
+ghép từ 4 ảnh PNG. Crawler tự động thu nhỏ ảnh (mặc định cạnh dài tối đa
+2000px) và nén JPEG trước khi ghép thành PDF, dung lượng thực tế đo
+được khoảng **10-160 KB/trang** tuỳ độ phức tạp trang.
 
 - Tính năng này **tắt theo mặc định**, phải bật rõ ràng bằng `--download-pdf`.
 - Chỉ áp dụng cho sách ghi "Bản điện tử: Miễn phí" *và* có nút "Xem ngay"
   (đọc được online, không cần app riêng) — sách có giá thì không thể lấy
-  được nội dung bằng cách này.
-- **Không giới hạn số trang theo mặc định** — tải trọn cuốn sách. Dùng
-  `--max-pages N` nếu chỉ muốn một bản xem trước.
-- **Tốc độ**: mỗi trang cần 4 request tải ảnh; trên thực tế đo được
-  khoảng 6-7 giây/trang (server của NXB khá chậm). Một cuốn "Toàn tập"
-  900 trang có thể mất **7-8 tiếng** để tải xong — hãy ước lượng thời
-  gian trước khi chạy `--download-pdf` cho cả một danh mục lớn.
+  được nội dung bằng cách này. Một số ít sách gắn nhãn "đọc được" nhưng
+  server thực ra báo "Sách đang cập nhật" (đo được ~2,5% trên mẫu ngẫu
+  nhiên) — trường hợp này bị bỏ qua tự động, có log cảnh báo.
+- **Không giới hạn số trang theo mặc định** — tải trọn cuốn sách (dựa
+  vào field "Số trang" ở trang chi tiết). Dùng `--max-pages N` nếu chỉ
+  muốn một bản xem trước.
+- **Tải song song** (`--workers`, mặc định 8): mỗi trang cần 4 request
+  ảnh, tất cả được xếp vào một hàng đợi chung và xử lý bởi `--workers`
+  luồng cùng lúc. Đo thực tế trên server stbook.vn cho thấy tốc độ phản
+  hồi đạt trần ở khoảng **~8 request/giây** bất kể mở bao nhiêu kết nối
+  cùng lúc (đã thử 4/8/16/24/32 luồng — từ 8 luồng trở lên không còn
+  nhanh hơn) — 8 là điểm cân bằng tốt nhất, không cần chỉnh trừ khi có
+  lý do cụ thể.
+- Với tốc độ ~8 request/giây, tải trọn **toàn bộ ~826 sách miễn phí của
+  site (~495.000 trang)** ước tính mất khoảng **2,5-3 ngày chạy liên
+  tục** — so với ~29 ngày nếu tải tuần tự từng ảnh một. Một cuốn "Toàn
+  tập" 900 trang mất khoảng 30 phút.
 - Kết quả lưu tại `data/<slug>/content/<product_id>.pdf`; ảnh từng trang
   chỉ là file tạm và bị xoá sau khi ghép xong (giữ lại bằng
   `--keep-page-images` nếu cần).
@@ -112,7 +127,7 @@ src/stbook_crawler/
   categories.py       # danh sách 15 danh mục cố định
   parse_category.py   # parse trang danh sách sách theo danh mục (có phân trang)
   parse_detail.py     # parse trang chi tiết 1 sách
-  content.py           # tải + ghép ảnh các trang xem thử
+  content.py           # tải song song + ghép ảnh các trang, xuất PDF
   storage.py            # ghi JSON ra data/<slug>/books.json và all_books.json
   main.py               # CLI điều phối toàn bộ
 ```

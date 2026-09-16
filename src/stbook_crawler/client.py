@@ -24,6 +24,35 @@ USER_AGENT = (
 )
 
 
+def build_bulk_session(pool_size: int = 8) -> requests.Session:
+    """Tạo một `requests.Session` KHÔNG rate-limit theo delay tuần tự.
+
+    Dùng cho tải nội dung sách song song (nhiều thread) — tốc độ được
+    khống chế bằng số lượng worker (`max_workers` của `ThreadPoolExecutor`)
+    thay vì độ trễ giữa từng request. `pool_size` cần >= số worker đồng
+    thời, nếu không connection pool sẽ nghẽn (thread phải đợi có kết nối
+    rảnh). Mặc định 8 vì đo thực tế cho thấy server stbook.vn không phản
+    hồi nhanh hơn dù mở nhiều kết nối hơn mức này (xem `content.py`).
+    """
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": USER_AGENT,
+            "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+        }
+    )
+    retry = Retry(
+        total=5,
+        backoff_factor=1.0,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=pool_size, pool_maxsize=pool_size)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
 class RateLimitedSession:
     """Wrapper quanh `requests.Session`, tự chèn độ trễ giữa các request.
 

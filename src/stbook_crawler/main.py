@@ -7,14 +7,18 @@ Cách dùng cơ bản (crawl toàn bộ site, chỉ lấy metadata):
 Các tuỳ chọn thường dùng:
 
     --category <slug>        chỉ crawl 1 danh mục (có thể lặp lại nhiều lần)
-    --skip-detail             không gọi trang chi tiết (nhanh hơn, ít dữ liệu hơn)
+    --skip-detail             không gọi trang chi tiết (nhanh hơn, ít dữ liệu hơn;
+                               không dùng được cùng --download-pdf)
     --download-covers         tải ảnh bìa về data/<slug>/covers/
     --download-pdf              tải TOÀN BỘ nội dung các sách "Miễn phí" đọc được
                                  online, ghép thành file PDF tại data/<slug>/content/<id>.pdf
     --max-pages N                giới hạn số trang tải mỗi sách khi --download-pdf
                                  (mặc định: không giới hạn, tải hết sách)
+    --workers N                   số request tải nội dung sách chạy song song
+                                 (mặc định 8 — đo thực tế cho thấy server không
+                                 phản hồi nhanh hơn dù mở nhiều kết nối hơn)
     --keep-page-images           giữ lại ảnh từng trang sau khi đã ghép PDF (mặc định xoá)
-    --delay SECONDS               độ trễ giữa các request (mặc định 0.8s)
+    --delay SECONDS               độ trễ giữa các request lấy metadata (mặc định 0.8s)
     --out DIR                     thư mục ghi dữ liệu (mặc định ./data)
 """
 
@@ -22,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -29,14 +34,16 @@ from pathlib import Path
 from tqdm import tqdm
 
 from .categories import CATEGORIES, Category
-from .client import RateLimitedSession
-from .content import assemble_pdf, download_book_pages
+from .client import RateLimitedSession, build_bulk_session
+from .content import DEFAULT_WORKERS, assemble_pdf, download_book_pages
 from .parse_category import fetch_category_books
-from .parse_detail import fetch_book_detail
+from .parse_detail import BookDetail, fetch_book_detail
 from .storage import book_record, category_dir_for, write_all_books, write_category_books
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("stbook_crawler")
+
+_PAGE_COUNT_RE = re.compile(r"\d+")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -70,13 +77,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Giới hạn số trang tải mỗi sách khi dùng --download-pdf (mặc định: không giới hạn).",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        help=f"Số request tải nội dung sách chạy song song (mặc định {DEFAULT_WORKERS}).",
+    )
+    parser.add_argument(
         "--keep-page-images",
         action="store_true",
         help="Giữ lại ảnh JPEG từng trang sau khi đã ghép thành PDF (mặc định xoá để tiết kiệm ổ đĩa).",
     )
-    parser.add_argument("--delay", type=float, default=0.8, help="Độ trễ (giây) giữa các request.")
+    parser.add_argument("--delay", type=float, default=0.8, help="Độ trễ (giây) giữa các request lấy metadata.")
     parser.add_argument("--out", type=Path, default=Path("data"), help="Thư mục ghi dữ liệu.")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+
+    if args.download_pdf and args.skip_detail:
+        parser.error(
+            "--download-pdf cần trang chi tiết để biết số trang mỗi sách, "
+            "không dùng được cùng --skip-detail."
+        )
+
+    return args
 
 
 def select_categories(slugs: list[str] | None) -> list[Category]:
@@ -92,6 +113,7 @@ def select_categories(slugs: list[str] | None) -> list[Category]:
 
 def crawl(args: argparse.Namespace) -> None:
     session = RateLimitedSession(delay_seconds=args.delay)
+    bulk_session = build_bulk_session(pool_size=args.workers) if args.download_pdf else None
     categories = select_categories(args.categories)
     args.out.mkdir(parents=True, exist_ok=True)
 
@@ -119,7 +141,7 @@ def crawl(args: argparse.Namespace) -> None:
 
             if args.download_pdf and item.product_code and _is_free_readable(item, detail):
                 _download_pdf(
-                    session, args.out, category, item, args.max_pages, args.keep_page_images
+                    bulk_session, args.out, category, item, detail, args.max_pages, args.workers, args.keep_page_images
                 )
 
         write_category_books(args.out, category, category_books)
@@ -148,12 +170,25 @@ def _download_cover(session: RateLimitedSession, out_dir: Path, category: Catego
         log.warning("  Lỗi tải ảnh bìa sách %s: %s", item.product_id, exc)
 
 
+def _parse_page_count(detail: BookDetail | None) -> int | None:
+    """Đọc số trang từ field "Số trang" ở trang chi tiết sách (ví dụ "992 trang")."""
+    if detail is None:
+        return None
+    raw = detail.info.get("Số trang")
+    if not raw:
+        return None
+    match = _PAGE_COUNT_RE.search(raw)
+    return int(match.group()) if match else None
+
+
 def _download_pdf(
-    session: RateLimitedSession,
+    bulk_session,
     out_dir: Path,
     category: Category,
     item,
+    detail: BookDetail | None,
     max_pages: int | None,
+    workers: int,
     keep_page_images: bool,
 ) -> None:
     content_dir = category_dir_for(out_dir, category) / "content"
@@ -161,11 +196,16 @@ def _download_pdf(
     if pdf_path.exists():
         return  # đã tải trước đó, không tải lại
 
+    num_pages = _parse_page_count(detail)
+    if num_pages is None:
+        log.warning("  Bỏ qua sách %s: không xác định được số trang.", item.product_id)
+        return
+    if max_pages is not None:
+        num_pages = min(num_pages, max_pages)
+
     pages_dir = content_dir / f"{item.product_id}_pages"
     try:
-        pages = download_book_pages(
-            session, item.product_code, pages_dir, max_pages=max_pages
-        )
+        pages = download_book_pages(bulk_session, item.product_code, pages_dir, num_pages, max_workers=workers)
         assemble_pdf(pages, pdf_path)
     except Exception as exc:  # noqa: BLE001
         log.warning("  Lỗi tải nội dung sách %s: %s", item.product_id, exc)
