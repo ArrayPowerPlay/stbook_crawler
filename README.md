@@ -23,11 +23,15 @@ và lưu lại theo đúng từng danh mục (mục/topic) đã có sẵn trên 
 
 ## Cài đặt
 
+Dùng [uv](https://docs.astral.sh/uv/) để cài đặt (đọc `pyproject.toml` +
+`uv.lock`):
+
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+uv sync
 ```
+
+Sau đó chạy lệnh qua `uv run`, ví dụ `uv run python -m stbook_crawler.main`
+— hoặc `source .venv/bin/activate` rồi chạy `python` như bình thường.
 
 ## Sử dụng
 
