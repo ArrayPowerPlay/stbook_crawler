@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import io
 import logging
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -38,6 +39,7 @@ from .client import BASE_URL
 DEFAULT_MAX_DIMENSION = 2000
 DEFAULT_JPEG_QUALITY = 82
 DEFAULT_WORKERS = 8
+MAX_RETRY_BACKOFF_SECONDS = 30.0
 
 log = logging.getLogger("stbook_crawler")
 
@@ -61,10 +63,13 @@ def download_book_pages(
     Tất cả 4*`num_pages` request ảnh góc được xếp vào một hàng đợi chung
     và xử lý bởi `max_workers` thread cùng lúc — `session` truyền vào
     nên được tạo bằng `client.build_bulk_session(pool_size>=max_workers)`
-    để tránh nghẽn cổ chai ở tầng connection pool. Trang nào không đủ 4
-    ảnh góc (lỗi mạng, hoặc vượt quá số trang thật của sách — ví dụ
-    server báo sách "đang cập nhật") sẽ bị bỏ qua và ghi log cảnh báo,
-    không làm hỏng các trang khác.
+    để tránh nghẽn cổ chai ở tầng connection pool. Lỗi mạng/timeout khi
+    tải một ảnh góc sẽ được thử lại vô hạn (backoff tăng dần, tối đa
+    `MAX_RETRY_BACKOFF_SECONDS` giữa các lần) cho tới khi tải được, nên
+    không làm mất trang chỉ vì server chậm tạm thời. Trang nào vẫn thiếu
+    ảnh góc do lỗi khác (ví dụ vượt quá số trang thật của sách — server
+    báo sách "đang cập nhật" nên trả về nội dung không phải ảnh) sẽ bị
+    bỏ qua và ghi log cảnh báo, không làm hỏng các trang khác.
 
     Trả về danh sách đường dẫn ảnh trang đã lưu, sắp đúng thứ tự trang
     (có thể ngắn hơn `num_pages` nếu có trang lỗi).
@@ -74,12 +79,28 @@ def download_book_pages(
     def fetch_tile(page: int, quadrant: int) -> Image.Image:
         image_name = f"img_short_{quadrant}{page}"
         url = f"{BASE_URL}/cbs20/download_preview/img.json/{product_code}/{image_name}/_READ"
-        response = session.get(url, timeout=30)
-        response.raise_for_status()
-        content_type = response.headers.get("Content-Type", "")
-        if "image" not in content_type:
-            raise ValueError(f"Không phải ảnh (page={page}, quadrant={quadrant}): {content_type}")
-        return Image.open(io.BytesIO(response.content))
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                response = session.get(url, timeout=30)
+                response.raise_for_status()
+            except requests.exceptions.RequestException as exc:
+                wait = min(2.0 * attempt, MAX_RETRY_BACKOFF_SECONDS)
+                log.warning(
+                    "  Lỗi mạng khi tải trang %d góc %d (lần %d), thử lại sau %.0fs: %s",
+                    page,
+                    quadrant,
+                    attempt,
+                    wait,
+                    exc,
+                )
+                time.sleep(wait)
+                continue
+            content_type = response.headers.get("Content-Type", "")
+            if "image" not in content_type:
+                raise ValueError(f"Không phải ảnh (page={page}, quadrant={quadrant}): {content_type}")
+            return Image.open(io.BytesIO(response.content))
 
     tiles_by_page: dict[int, dict[int, Image.Image]] = defaultdict(dict)
     jobs = [(page, quadrant) for page in range(1, num_pages + 1) for quadrant in range(1, 5)]
