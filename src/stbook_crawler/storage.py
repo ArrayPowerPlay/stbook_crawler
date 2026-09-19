@@ -46,6 +46,24 @@ def book_record(item: BookListItem, detail: BookDetail | None) -> dict:
     return record
 
 
+def load_category_books(data_dir: Path, category: Category) -> dict[str, dict]:
+    """Đọc `books.json` cũ của một danh mục (nếu có), phục vụ resume.
+
+    Trả về dict ánh xạ `product_id -> bản ghi sách` đã lưu ở lần chạy
+    trước. Trả về dict rỗng nếu chưa từng crawl danh mục này, hoặc nếu
+    file bị hỏng/không đọc được (khi đó coi như crawl lại từ đầu thay vì
+    làm crash chương trình).
+    """
+    path = data_dir / category.slug / "books.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return {book["product_id"]: book for book in payload.get("books", []) if "product_id" in book}
+
+
 def write_category_books(data_dir: Path, category: Category, books: list[dict]) -> Path:
     category_dir = data_dir / category.slug
     category_dir.mkdir(parents=True, exist_ok=True)
