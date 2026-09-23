@@ -22,6 +22,9 @@ python -m stbook_crawler.main --download-covers                          # kèm 
 python -m stbook_crawler.main --download-pdf --max-pages 20              # test tải PDF, giới hạn trang
 python -m stbook_crawler.main --download-pdf --workers 8                 # tải trọn nội dung PDF (mặc định tắt)
 python -m stbook_crawler.main --help                                      # xem toàn bộ cờ
+
+# Trên server GPU Run:ai: chạy nền kèm tiến trình giữ GPU (cần torch, đã có trong dependency)
+source .venv/bin/activate && ./scripts/run_with_gpu_keepalive.sh --download-pdf
 ```
 
 Không có bộ test, linter, hay build step nào được cấu hình trong repo này
