@@ -67,10 +67,11 @@ Luồng dữ liệu qua các module:
    (`/cbs20/download_preview/img.json/<product_code>/img_short_<1-4><trang>/_READ`).
    Toàn bộ `4*num_pages` request ảnh góc được xếp vào một hàng đợi chung
    và xử lý song song, ghép lại, thu nhỏ + nén JPEG, rồi ghép thành 1 PDF
-   bằng Pillow. Lỗi mạng/timeout khi tải 1 ảnh góc được retry vô hạn với
-   backoff tăng dần (không bao giờ bỏ trang chỉ vì server chậm tạm
-   thời); các lỗi khác (vd. content-type không phải ảnh, do sách "đang
-   cập nhật") thì bỏ qua trang đó và ghi log cảnh báo, không dừng cả
+   bằng Pillow. Lỗi mạng/timeout khi tải 1 ảnh góc được retry tối đa 5 lần
+   (`MAX_TILE_RETRIES`) với backoff tăng dần; lỗi 4xx vĩnh viễn (vd. 404
+   do trang vượt quá số trang thật) không retry; hết lượt hoặc các lỗi
+   khác (vd. content-type không phải ảnh, do sách "đang cập nhật") thì
+   bỏ qua trang đó và ghi log cảnh báo, không dừng cả
    crawl.
 5. `storage.py` — ghi/đọc `data/<slug>/books.json` (từng danh mục) và
    `data/all_books.json` (gộp toàn bộ). Đây cũng là cơ chế resume: mỗi

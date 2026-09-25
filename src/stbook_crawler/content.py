@@ -40,6 +40,7 @@ DEFAULT_MAX_DIMENSION = 2000
 DEFAULT_JPEG_QUALITY = 82
 DEFAULT_WORKERS = 8
 MAX_RETRY_BACKOFF_SECONDS = 30.0
+MAX_TILE_RETRIES = 5  # số lần thử LẠI tối đa (không tính lần gọi đầu tiên) cho mỗi ảnh góc
 
 log = logging.getLogger("stbook_crawler")
 
@@ -64,12 +65,13 @@ def download_book_pages(
     và xử lý bởi `max_workers` thread cùng lúc — `session` truyền vào
     nên được tạo bằng `client.build_bulk_session(pool_size>=max_workers)`
     để tránh nghẽn cổ chai ở tầng connection pool. Lỗi mạng/timeout khi
-    tải một ảnh góc sẽ được thử lại vô hạn (backoff tăng dần, tối đa
-    `MAX_RETRY_BACKOFF_SECONDS` giữa các lần) cho tới khi tải được, nên
-    không làm mất trang chỉ vì server chậm tạm thời. Trang nào vẫn thiếu
-    ảnh góc do lỗi khác (ví dụ vượt quá số trang thật của sách — server
-    báo sách "đang cập nhật" nên trả về nội dung không phải ảnh) sẽ bị
-    bỏ qua và ghi log cảnh báo, không làm hỏng các trang khác.
+    tải một ảnh góc sẽ được thử lại tối đa `MAX_TILE_RETRIES` lần (backoff
+    tăng dần, tối đa `MAX_RETRY_BACKOFF_SECONDS` giữa các lần). Lỗi vĩnh
+    viễn của server (HTTP 4xx trừ 408/429, ví dụ 404 do trang vượt quá
+    số trang thật của sách) KHÔNG được thử lại vì thử bao nhiêu lần cũng
+    không khỏi. Trang nào vẫn thiếu ảnh góc (hết lượt thử, lỗi vĩnh viễn,
+    hoặc server trả nội dung không phải ảnh do sách "đang cập nhật") sẽ
+    bị bỏ qua và ghi log cảnh báo, không làm hỏng các trang khác.
 
     Trả về danh sách đường dẫn ảnh trang đã lưu, sắp đúng thứ tự trang
     (có thể ngắn hơn `num_pages` nếu có trang lỗi).
@@ -86,12 +88,15 @@ def download_book_pages(
                 response = session.get(url, timeout=30)
                 response.raise_for_status()
             except requests.exceptions.RequestException as exc:
+                if _is_permanent_error(exc) or attempt > MAX_TILE_RETRIES:
+                    raise
                 wait = min(2.0 * attempt, MAX_RETRY_BACKOFF_SECONDS)
                 log.warning(
-                    "  Lỗi mạng khi tải trang %d góc %d (lần %d), thử lại sau %.0fs: %s",
+                    "  Lỗi mạng khi tải trang %d góc %d (lần thử lại %d/%d), thử lại sau %.0fs: %s",
                     page,
                     quadrant,
                     attempt,
+                    MAX_TILE_RETRIES,
                     wait,
                     exc,
                 )
@@ -143,6 +148,14 @@ def assemble_pdf(page_image_paths: list[Path], pdf_path: Path) -> Path | None:
     first, rest = images[0], images[1:]
     first.save(pdf_path, "PDF", save_all=True, append_images=rest)
     return pdf_path
+
+
+def _is_permanent_error(exc: requests.exceptions.RequestException) -> bool:
+    """True nếu lỗi là HTTP 4xx vĩnh viễn (thử lại vô ích), trừ 408/429 là lỗi tạm thời."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return False
+    return 400 <= response.status_code < 500 and response.status_code not in (408, 429)
 
 
 def _downscale(image: Image.Image, max_dimension: int) -> Image.Image:
